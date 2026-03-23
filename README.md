@@ -1,4 +1,39 @@
 
+## Gaussian-Derivative Loss Kernel for EventProp
+
+The standard EventProp loss weights output neuron voltages with a simple exponential decay `exp(-t/T)`, which biases gradients heavily toward the end of the trial. I replaced this with a Gaussian-derivative kernel that lets you control *when* during the trial the loss pays attention:
+
+$$a - b\frac{t}{T} \exp\left(\frac{-(t/T)^2}{2c^2}\right)$$
+
+This reshapes the adjoint dynamics of the output neurons. The membrane voltage adjoint becomes:
+
+$$\tau_{\text{mem}} \tilde{\lambda}_{V,j}^{m'} = -\tilde{\lambda}_{V,j}^{m} + \delta_{j,l(m)} - \text{softmax}_j\left(\int_0^T g(t)\, V_k^m\, dt\right) \cdot g(t)$$
+
+where `g(t)` is the Gaussian-derivative kernel above, and the softmax is computed over the kernel-weighted voltage integrals across all classes.
+
+In the code (`models.py`, `EVP_LIF_output_sum_weigh_exp`), this is the backward pass gradient and the forward `sum_V` accumulation:
+
+```c
+// Kernel parameters
+float m = 0;  float s = -0.2;  float d = 4.4;  float o = 0.4;
+
+// Backward pass — gradient injection for correct class
+A = 2 * (o + d * ((1-local_t) - m) * exp(-((1-local_t) - m)*((1-local_t) - m) / (2*s*s)))
+    * (1.0 - SoftmaxVal) / tau_m / trial_t / N_batch;
+
+// Forward pass — weighted voltage accumulation
+sum_V += 2 * (o + d * (local_t - m) * exp(-(local_t - m)*(local_t - m) / (2*s*s)))
+         * V / trial_t * DT;
+```
+
+The effect is straightforward: the Gaussian kernel concentrates gradient signal in a tunable time window rather than letting it leak across the whole trial. On SHD, this roughly halves the number of epochs needed to reach ~70% accuracy:
+
+![Gaussian vs Exponential training curves](gaussian_vs_exp_training.png)
+
+Both converge to similar final accuracy (~83%), but the Gaussian kernel gets there faster and with less variance in early training.
+
+---
+
 The work in this repository is based on [GeNN 4.9](https://github.com/genn-team/genn/tree/refs/tags/4.9.0). 
 The code is generally organised so that the GeNN model definitions are collected in `models.py` and for the benchmarks, there are individual python files `simulator_XXX.py` as follows:
 
